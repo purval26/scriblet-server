@@ -210,6 +210,10 @@ function startTurn(roomId) {
   // Update current drawer
   const playerOrder = room.state.playerOrder || Array.from(room.players.keys());
   room.state.currentDrawer = playerOrder[room.state.turn % playerOrder.length];
+  if (!room.players.has(room.state.currentDrawer)) {
+  // Pick the first available player as drawer
+  room.state.currentDrawer = Array.from(room.players.keys())[0];
+}
 
   // Clear canvas for everyone
   io.to(roomId).emit("canvas-clear");
@@ -299,9 +303,10 @@ function handleWordChosen(roomId, word) {
   io.to(roomId).emit("canvas-clear");
 
   // Send initial states with consistent data
-  const baseGameState = {
-    drawer: room.players.get(room.state.currentDrawer).username,
-    drawerId: room.state.currentDrawer,
+const drawerPlayer = room.players.get(room.state.currentDrawer);
+const baseGameState = {
+  drawer: drawerPlayer ? drawerPlayer.username : "Unknown",
+  drawerId: room.state.currentDrawer,
     isChoosing: false,
     timeLeft: room.state.timeLeft,
     timerType: "draw",
@@ -866,4 +871,12 @@ function getNextHintIndex(word, revealedIndices) {
   // Return the first index (rarest character) with some randomization
   const randomOffset = Math.floor(Math.random() * Math.min(3, sortedIndices.length));
   return sortedIndices[randomOffset];
+}
+
+// --- Fix for drawer assignment ---
+function ensureDrawerAssigned(room) {
+  if (!room.players.has(room.state.currentDrawer)) {
+    // Pick the first available player as drawer
+    room.state.currentDrawer = Array.from(room.players.keys())[0];
+  }
 }
