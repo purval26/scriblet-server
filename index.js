@@ -470,10 +470,10 @@ io.on("connection", (socket) => {
     );
 
     if (existingPlayer) {
-      // Rejoin logic
+      // Rejoin logic - keep existing
       const [oldSocketId, playerData] = existingPlayer;
-      room.players.delete(oldSocketId); // Remove old socket entry
-      room.players.set(socket.id, playerData); // Add with new socket
+      room.players.delete(oldSocketId);
+      room.players.set(socket.id, playerData);
       userToRoom.set(socket.id, roomId);
       socket.join(roomId);
 
@@ -482,7 +482,7 @@ io.on("connection", (socket) => {
         room.state.currentDrawer = socket.id;
       }
 
-      // Send current game state
+      // Send current game state for rejoin
       socket.emit("room-joined", {
         roomId: room.id,
         players: getRoomPlayers(room),
@@ -497,37 +497,47 @@ io.on("connection", (socket) => {
           drawingData: room.state.drawingData,
           timeLeft: room.state.timeLeft,
           scores: Object.fromEntries(
-            Array.from(room.players.entries()).map(([id, p]) => [
-              p.username,
-              p.score,
-            ])
+            Array.from(room.players.entries()).map(([id, p]) => [p.username, p.score])
           ),
         },
       });
     } else {
-      // Normal join logic for new players
+      // New player joining
       if (room.players.size >= room.settings.maxPlayers) {
         return socket.emit("error", { message: "Room is full" });
       }
 
+      // Add new player with initial score
       room.players.set(socket.id, { username, score: 0, isHost: false });
       userToRoom.set(socket.id, roomId);
       socket.join(roomId);
+
+      // If game is in progress, send game state
+      const gameState = room.state.isPlaying ? {
+        isPlaying: true,
+        drawer: room.players.get(room.state.currentDrawer)?.username,
+        drawerId: room.state.currentDrawer,
+        isChoosing: room.state.isChoosing,
+        timeLeft: room.state.timeLeft,
+        drawingData: room.state.drawingData,
+        scores: Object.fromEntries(
+          Array.from(room.players.entries()).map(([id, p]) => [p.username, p.score])
+        ),
+      } : null;
 
       socket.emit("room-joined", {
         roomId: room.id,
         players: getRoomPlayers(room),
         host: room.host,
         settings: room.settings,
-        gameState: room.state.isPlaying
-          ? {
-              isPlaying: true,
-              drawer: room.players.get(room.state.currentDrawer)?.username,
-              drawerId: room.state.currentDrawer,
-              isChoosing: room.state.isChoosing,
-              timeLeft: room.state.timeLeft,
-            }
-          : null,
+        gameState: gameState
+      });
+
+      // Notify other players about new join
+      io.to(roomId).emit("chat-message", {
+        username: "System",
+        message: `${username} joined the game`,
+        isSystem: true
       });
     }
 
