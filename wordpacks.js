@@ -1,4 +1,4 @@
-module.exports = {
+const wordpacks = {
   Easy: [
     "apple", "car", "dog", "cat", "house", "tree", "sun", "fish", "star", "book",
     "shoe", "ball", "hat", "cup", "cake", "chair", "bed", "bird", "milk", "banana",
@@ -51,5 +51,17 @@ module.exports = {
     "lighthouse", "microscope", "motorcycle", "parachute", "pharaoh", "quarantine", "rollercoaster",
     "saxophone", "skateboard", "spaceship", "submarine", "tesseract", "trombone", "tsunami", "vortex",
     "wildebeest", "xylophone", "zeppelin"
-  ]
+  ],
+  // Add Mix category
+  Mix: [],
 };
+
+// Combine all words for Mix
+wordpacks.Mix = [
+  ...wordpacks.Easy,
+  ...wordpacks.Normal,
+  ...wordpacks.Moderate,
+  ...wordpacks.Hard,
+];
+
+module.exports = wordpacks;
