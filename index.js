@@ -808,6 +808,7 @@ io.on("connection", (socket) => {
 // --- API Endpoints ---
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
+  console.log("Ping Successful")
 });
 
 app.get("/rooms", (req, res) => {
