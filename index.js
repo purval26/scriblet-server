@@ -6,10 +6,12 @@ const { v4: uuidv4 } = require("uuid");
 const wordpacks = require("./wordpacks");
 
 const app = express();
-app.use(cors({
-  origin: process.env.CLIENT_URL || "*",
-  credentials: true
-}));
+app.use(
+  cors({
+    origin: process.env.CLIENT_URL || "*",
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 const server = http.createServer(app);
@@ -17,13 +19,13 @@ const io = socketIO(server, {
   cors: {
     origin: process.env.CLIENT_URL || "*",
     methods: ["GET", "POST"],
-    credentials: true
+    credentials: true,
   },
 });
 
 // Basic route for health check
-app.get('/', (req, res) => {
-  res.send('Scriblet server is running!');
+app.get("/", (req, res) => {
+  res.send("Scriblet server is running!");
 });
 
 const PORT = process.env.PORT || 3001;
@@ -92,7 +94,7 @@ function getRandomWords(room, count) {
 }
 
 // --- Scoring helper function ---
-function calculatePoints(timeLeft, maxTime) {
+function calculatePoints(timeLeft, maxTime, roomId) {
   // Base points between 100-300
   const basePoints = 100;
   const maxBonus = 200;
@@ -103,15 +105,17 @@ function calculatePoints(timeLeft, maxTime) {
   // Round to nearest 10
   const totalPoints = Math.round((basePoints + timeBonus) / 10) * 10;
 
+  
   console.log(
     `[SCORING] Time left: ${timeLeft}/${maxTime}, Points awarded: ${totalPoints}`
   );
-
+  
+  // Remove this emit from here as we'll handle it in the chat-message handler
   return totalPoints;
 }
 
 // Add this new function to calculate drawer points
-function calculateDrawerPoints(correctGuesses, totalPlayers) {
+function calculateDrawerPoints(correctGuesses, totalPlayers, roomId) {
   // Drawer gets points based on how many players guessed correctly
   const nonDrawerCount = totalPlayers - 1; // Exclude drawer
   const allGuessedBonus = 50; // Bonus for everyone guessing
@@ -119,13 +123,19 @@ function calculateDrawerPoints(correctGuesses, totalPlayers) {
 
   if (correctGuesses === nonDrawerCount) {
     // Everyone guessed - give bonus + per guess points
-    return allGuessedBonus * nonDrawerCount + perGuessPoints * correctGuesses;
+    const drawerPoints = allGuessedBonus + perGuessPoints * correctGuesses;
+    console.log(
+      `[SCORING] All guessed! Drawer points: ${drawerPoints} (bonus + per guess)`
+    );
+    return drawerPoints;
   } else if (correctGuesses > 0) {
     // Some people guessed - give per guess points
-    return perGuessPoints * correctGuesses;
+    const drawerPoints = perGuessPoints * correctGuesses;
+    console.log(
+      `[SCORING] Some guessed! Drawer points: ${drawerPoints} (per guess)`)
+    return drawerPoints;
   }
-
-  // No one guessed
+  
   return 0;
 }
 
@@ -211,9 +221,9 @@ function startTurn(roomId) {
   const playerOrder = room.state.playerOrder || Array.from(room.players.keys());
   room.state.currentDrawer = playerOrder[room.state.turn % playerOrder.length];
   if (!room.players.has(room.state.currentDrawer)) {
-  // Pick the first available player as drawer
-  room.state.currentDrawer = Array.from(room.players.keys())[0];
-}
+    // Pick the first available player as drawer
+    room.state.currentDrawer = Array.from(room.players.keys())[0];
+  }
 
   // Clear canvas for everyone
   io.to(roomId).emit("canvas-clear");
@@ -254,6 +264,7 @@ function startTurn(roomId) {
     timerType: "choose",
     round: room.state.round,
     turn: room.state.turn,
+    roundEnd: false,
   };
 
   // Send to everyone first
@@ -284,7 +295,7 @@ function handleWordChosen(roomId, word) {
   room.state.drawingData = [];
   room.state.revealedIndices = new Set();
   room.state.correctGuesses = new Set();
-  
+
   // Use room settings for hint count but don't reveal more than half the word
   const maxHints = Math.floor(word.length / 2);
   room.state.hintCount = Math.min(room.settings.hintCount || 2, maxHints);
@@ -303,10 +314,10 @@ function handleWordChosen(roomId, word) {
   io.to(roomId).emit("canvas-clear");
 
   // Send initial states with consistent data
-const drawerPlayer = room.players.get(room.state.currentDrawer);
-const baseGameState = {
-  drawer: drawerPlayer ? drawerPlayer.username : "Unknown",
-  drawerId: room.state.currentDrawer,
+  const drawerPlayer = room.players.get(room.state.currentDrawer);
+  const baseGameState = {
+    drawer: drawerPlayer ? drawerPlayer.username : "Unknown",
+    drawerId: room.state.currentDrawer,
     isChoosing: false,
     timeLeft: room.state.timeLeft,
     timerType: "draw",
@@ -358,7 +369,7 @@ const baseGameState = {
               if (room.state.revealedIndices.has(i)) return letter;
               if (letter === " ") return " ";
               // Add visual separator between words
-              if (i > 0 && word[i-1] === " ") return "‖_";
+              if (i > 0 && word[i - 1] === " ") return "‖_";
               return "_";
             })
             .join("");
@@ -369,7 +380,7 @@ const baseGameState = {
               indices: Array.from(room.state.revealedIndices),
               hiddenWord: revealedWord,
               hintNumber: room.state.revealedIndices.size,
-              totalHints: room.state.hintCount
+              totalHints: room.state.hintCount,
             });
         }
       }
@@ -379,7 +390,7 @@ const baseGameState = {
         timeLeft: timeLeft,
         timerType: "draw",
         hintsRevealed: room.state.revealedIndices.size,
-        totalHints: room.state.hintCount
+        totalHints: room.state.hintCount,
       });
     } else {
       clearInterval(room.state.timerInterval);
@@ -391,13 +402,40 @@ const baseGameState = {
 function endTurn(roomId) {
   const room = rooms.get(roomId);
   if (!room) return;
+
+  // Calculate drawer points if any guesses were made
+  const drawer = room.players.get(room.state.currentDrawer);
+  if (room.state.correctGuesses.size > 0 && drawer) {
+    const drawerPoints = calculateDrawerPoints(
+      room.state.correctGuesses.size,
+      room.players.size,
+      roomId
+    );
+    drawer.lastAwardedPoints = drawerPoints;
+    drawer.score += drawerPoints;
+  }
+
+  // Build awardedPoints for this round
+  const awardedPoints = {};
+  for (const [id, player] of room.players.entries()) {
+    // Include points for this round before resetting
+    awardedPoints[player.username] = player.lastAwardedPoints || 0;
+  }
+
   io.to(roomId).emit("game-state-update", {
     roundEnd: true,
     scores: Object.fromEntries(
       Array.from(room.players.entries()).map(([id, p]) => [p.username, p.score])
     ),
+    awardedPoints,
     word: room.state.word,
   });
+
+  // Now reset the lastAwardedPoints for next round
+  for (const player of room.players.values()) {
+    player.lastAwardedPoints = 0;
+  }
+
   // Next turn or next round
   room.state.turn = (room.state.turn || 0) + 1;
   const playerOrder = room.state.playerOrder || Array.from(room.players.keys());
@@ -497,7 +535,10 @@ io.on("connection", (socket) => {
           drawingData: room.state.drawingData,
           timeLeft: room.state.timeLeft,
           scores: Object.fromEntries(
-            Array.from(room.players.entries()).map(([id, p]) => [p.username, p.score])
+            Array.from(room.players.entries()).map(([id, p]) => [
+              p.username,
+              p.score,
+            ])
           ),
         },
       });
@@ -513,31 +554,36 @@ io.on("connection", (socket) => {
       socket.join(roomId);
 
       // If game is in progress, send game state
-      const gameState = room.state.isPlaying ? {
-        isPlaying: true,
-        drawer: room.players.get(room.state.currentDrawer)?.username,
-        drawerId: room.state.currentDrawer,
-        isChoosing: room.state.isChoosing,
-        timeLeft: room.state.timeLeft,
-        drawingData: room.state.drawingData,
-        scores: Object.fromEntries(
-          Array.from(room.players.entries()).map(([id, p]) => [p.username, p.score])
-        ),
-      } : null;
+      const gameState = room.state.isPlaying
+        ? {
+            isPlaying: true,
+            drawer: room.players.get(room.state.currentDrawer)?.username,
+            drawerId: room.state.currentDrawer,
+            isChoosing: room.state.isChoosing,
+            timeLeft: room.state.timeLeft,
+            drawingData: room.state.drawingData,
+            scores: Object.fromEntries(
+              Array.from(room.players.entries()).map(([id, p]) => [
+                p.username,
+                p.score,
+              ])
+            ),
+          }
+        : null;
 
       socket.emit("room-joined", {
         roomId: room.id,
         players: getRoomPlayers(room),
         host: room.host,
         settings: room.settings,
-        gameState: gameState
+        gameState: gameState,
       });
 
       // Notify other players about new join
       io.to(roomId).emit("chat-message", {
         username: "System",
         message: `${username} joined the game`,
-        isSystem: true
+        isSystem: true,
       });
     }
 
@@ -680,39 +726,57 @@ io.on("connection", (socket) => {
       !room.state.correctGuesses.has(socket.id);
 
     if (isCorrectGuess) {
-      // Calculate points based on time left
-      const points = calculatePoints(
-        room.state.timeLeft,
-        room.settings.drawTime
-      );
+      // Calculate and award points
+      const points = calculatePoints(room.state.timeLeft, room.settings.drawTime, roomId);
+      player.lastAwardedPoints = points;
       player.score += points;
       room.state.correctGuesses.add(socket.id);
 
-      // Broadcast correct guess
-      io.to(roomId).emit("correct-guess", {
-        username: player.username,
-        points,
-        mascot: player.mascot,
+      // Reveal the full word to the player who guessed correctly
+      io.to(socket.id).emit("game-state-update", {
+        hiddenWord: room.state.word,  // Show complete word
+        isDrawer: false,
+        drawer: room.players.get(room.state.currentDrawer)?.username,
+        drawerId: room.state.currentDrawer,
+        timeLeft: room.state.timeLeft,
+        timerType: "draw"
       });
 
-      // Check if everyone has guessed
+      // Emit the correct guess message to chat without "System:"
+      io.to(roomId).emit("chat-message", {
+        message: `${player.username} guessed correctly!`,
+        type: "correct-guess"
+      });
+
+      // Emit points awarded
+      io.to(roomId).emit("word-end", {
+        awardedPoints: {
+          [player.username]: points
+        },
+        word: room.state.word
+      });
+
+      // Check if everyone guessed
       const nonDrawerCount = room.players.size - 1;
       if (room.state.correctGuesses.size >= nonDrawerCount) {
         const drawerPoints = calculateDrawerPoints(
           room.state.correctGuesses.size,
-          room.players.size
+          room.players.size,
+          roomId
         );
-
+        
         const drawer = room.players.get(room.state.currentDrawer);
+        drawer.lastAwardedPoints = drawerPoints;
         drawer.score += drawerPoints;
 
-        io.to(roomId).emit("drawer-points", {
-          username: drawer.username,
-          points: drawerPoints,
-          allGuessed: true,
+        // Emit drawer points
+        io.to(roomId).emit("word-end", {
+          awardedPoints: {
+            [drawer.username]: drawerPoints
+          },
+          word: room.state.word
         });
 
-        // End turn if everyone guessed
         clearInterval(room.state.timerInterval);
         endTurn(roomId);
       }
@@ -808,7 +872,7 @@ io.on("connection", (socket) => {
 // --- API Endpoints ---
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
-  console.log("Ping Successful")
+  console.log("Ping Successful");
 });
 
 app.get("/rooms", (req, res) => {
@@ -821,30 +885,30 @@ app.get("/rooms", (req, res) => {
   res.json(activeRooms);
 });
 
-// Helper function to calculate when to show next hint
-function calculateNextHintTime(totalTime, hintCount) {
-  if (hintCount <= 0) return 0;
+// // Helper function to calculate when to show next hint
+// function calculateNextHintTime(totalTime, hintCount) {
+//   if (hintCount <= 0) return 0;
 
-  // All hints should be revealed by 66.7% of time passed (33.3% remaining)
-  const hintEndTime = Math.floor(totalTime * 0.333);
-  const hintStartTime = totalTime;
-  const timePerHint = (hintStartTime - hintEndTime) / hintCount;
+//   // All hints should be revealed by 66.7% of time passed (33.3% remaining)
+//   const hintEndTime = Math.floor(totalTime * 0.333);
+//   const hintStartTime = totalTime;
+//   const timePerHint = (hintStartTime - hintEndTime) / hintCount;
 
-  return Math.floor(hintStartTime - timePerHint);
-}
+//   return Math.floor(hintStartTime - timePerHint);
+// }
 
-// Helper function to get next letter to reveal
-function getNextHint(word, revealedIndices) {
-  // Filter out spaces and already revealed indices
-  const available = Array.from(word)
-    .map((_, i) => i)
-    .filter((i) => word[i] !== " " && !revealedIndices.has(i));
+// // Helper function to get next letter to reveal
+// function getNextHint(word, revealedIndices) {
+//   // Filter out spaces and already revealed indices
+//   const available = Array.from(word)
+//     .map((_, i) => i)
+//     .filter((i) => word[i] !== " " && !revealedIndices.has(i));
 
-  if (available.length === 0) return -1;
+//   if (available.length === 0) return -1;
 
-  // Return random available index
-  return available[Math.floor(Math.random() * available.length)];
-}
+//   // Return random available index
+//   return available[Math.floor(Math.random() * available.length)];
+// }
 
 // Helper function to get next letter to reveal with position priority
 function getNextHintIndex(word, revealedIndices) {
@@ -860,7 +924,7 @@ function getNextHintIndex(word, revealedIndices) {
   const frequency = {};
   for (let i = 0; i < word.length; i++) {
     const char = word[i].toLowerCase();
-    if (char !== ' ' && !revealedIndices.has(i)) {
+    if (char !== " " && !revealedIndices.has(i)) {
       frequency[char] = (frequency[char] || 0) + 1;
     }
   }
@@ -870,24 +934,26 @@ function getNextHintIndex(word, revealedIndices) {
     const freqA = frequency[word[a].toLowerCase()];
     const freqB = frequency[word[b].toLowerCase()];
     if (freqA !== freqB) return freqA - freqB; // Rarer letters first
-    
+
     // If same frequency, prefer revealing vowels later
-    const isVowelA = 'aeiou'.includes(word[a].toLowerCase());
-    const isVowelB = 'aeiou'.includes(word[b].toLowerCase());
+    const isVowelA = "aeiou".includes(word[a].toLowerCase());
+    const isVowelB = "aeiou".includes(word[b].toLowerCase());
     if (isVowelA !== isVowelB) return isVowelA ? 1 : -1;
-    
+
     return 0;
   });
 
   // Return the first index (rarest character) with some randomization
-  const randomOffset = Math.floor(Math.random() * Math.min(3, sortedIndices.length));
+  const randomOffset = Math.floor(
+    Math.random() * Math.min(3, sortedIndices.length)
+  );
   return sortedIndices[randomOffset];
 }
 
-// --- Fix for drawer assignment ---
-function ensureDrawerAssigned(room) {
-  if (!room.players.has(room.state.currentDrawer)) {
-    // Pick the first available player as drawer
-    room.state.currentDrawer = Array.from(room.players.keys())[0];
-  }
-}
+// // --- Fix for drawer assignment ---
+// function ensureDrawerAssigned(room) {
+//   if (!room.players.has(room.state.currentDrawer)) {
+//     // Pick the first available player as drawer
+//     room.state.currentDrawer = Array.from(room.players.keys())[0];
+//   }
+// }
