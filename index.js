@@ -116,26 +116,19 @@ function calculatePoints(timeLeft, maxTime, roomId) {
 
 // Add this new function to calculate drawer points
 function calculateDrawerPoints(correctGuesses, totalPlayers, roomId) {
-  // Drawer gets points based on how many players guessed correctly
-  const nonDrawerCount = totalPlayers - 1; // Exclude drawer
-  const allGuessedBonus = 50; // Bonus for everyone guessing
-  const perGuessPoints = 25; // Points per correct guess
-
-  if (correctGuesses === nonDrawerCount) {
-    // Everyone guessed - give bonus + per guess points
-    const drawerPoints = allGuessedBonus + perGuessPoints * correctGuesses;
-    console.log(
-      `[SCORING] All guessed! Drawer points: ${drawerPoints} (bonus + per guess)`
-    );
-    return drawerPoints;
-  } else if (correctGuesses > 0) {
-    // Some people guessed - give per guess points
-    const drawerPoints = perGuessPoints * correctGuesses;
-    console.log(
-      `[SCORING] Some guessed! Drawer points: ${drawerPoints} (per guess)`)
-    return drawerPoints;
-  }
+  // Add after other const declarations at the top
+const ALL_GUESSED_BONUS = 50;  // Bonus points when everyone guesses
+const PER_GUESS_POINTS = 25;   // Points per correct guess
+  if (!correctGuesses || !totalPlayers) return 0;
   
+  const nonDrawerCount = Math.max(0, totalPlayers - 1);
+  if (nonDrawerCount === 0) return 0;
+
+  if (correctGuesses >= nonDrawerCount) {
+    return ALL_GUESSED_BONUS + (PER_GUESS_POINTS * correctGuesses);
+  } else if (correctGuesses > 0) {
+    return PER_GUESS_POINTS * correctGuesses;
+  }
   return 0;
 }
 
@@ -296,19 +289,26 @@ function handleWordChosen(roomId, word) {
   room.state.revealedIndices = new Set();
   room.state.correctGuesses = new Set();
 
-  // Use room settings for hint count but don't reveal more than half the word
-  const maxHints = Math.floor(word.length / 2);
-  room.state.hintCount = Math.min(room.settings.hintCount || 2, maxHints);
-
-  // Calculate hint release times based on draw time
+  // Calculate hint timing
   const totalTime = room.settings.drawTime;
-  const hintEndTime = Math.floor(totalTime * 0.333); // Show all hints by last 33.3% of time
+  const hintEndTime = Math.floor(totalTime * 0.4); // Last 40% of time has no hints
   const timeForHints = totalTime - hintEndTime;
-  const hintInterval = Math.floor(timeForHints / (room.state.hintCount + 1));
-  const hintTimes = Array.from(
-    { length: room.state.hintCount },
-    (_, i) => totalTime - (i + 1) * hintInterval
+  
+  // Get number of hints from settings
+  room.state.hintCount = Math.min(
+    room.settings.hintCount || 2,
+    Math.floor(word.length / 2)
   );
+
+  // Generate random hint times within the first 60% of time
+  const hintTimes = Array.from({ length: room.state.hintCount }, () => {
+    // Random time between totalTime and hintEndTime
+    return hintEndTime + Math.floor(Math.random() * timeForHints);
+  }).sort((a, b) => b - a); // Sort in descending order so earlier times come first
+
+  console.log(`[HINTS] Total hints: ${room.state.hintCount}`);
+  console.log(`[HINTS] Hint times:`, hintTimes);
+  console.log(`[HINTS] Draw time range: ${hintEndTime} - ${totalTime}`);
 
   // Clear canvas for everyone
   io.to(roomId).emit("canvas-clear");
@@ -353,15 +353,21 @@ function handleWordChosen(roomId, word) {
     if (timeLeft > 0) {
       room.state.timeLeft--;
 
+      // Debug hint timing
+      if (hintTimes.includes(timeLeft)) {
+        console.log(`[HINTS] Time for hint! Time left: ${timeLeft}`);
+        console.log(`[HINTS] Current hints revealed: ${room.state.revealedIndices.size}`);
+      }
+
       // Check if it's time for a hint
       if (
         hintTimes.includes(timeLeft) &&
         room.state.revealedIndices.size < room.state.hintCount
       ) {
-        // Get next hint index using our improved hint selection
         const newHint = getNextHintIndex(word, room.state.revealedIndices);
         if (newHint !== -1) {
           room.state.revealedIndices.add(newHint);
+          console.log(`[HINTS] Revealed new hint at index: ${newHint}`);
 
           // Broadcast hint to all guessers with improved word display
           const revealedWord = Array.from(word)
@@ -554,36 +560,56 @@ io.on("connection", (socket) => {
       socket.join(roomId);
 
       // If game is in progress, send game state
-      const gameState = room.state.isPlaying
-        ? {
-            isPlaying: true,
-            drawer: room.players.get(room.state.currentDrawer)?.username,
-            drawerId: room.state.currentDrawer,
-            isChoosing: room.state.isChoosing,
-            timeLeft: room.state.timeLeft,
-            drawingData: room.state.drawingData,
-            scores: Object.fromEntries(
-              Array.from(room.players.entries()).map(([id, p]) => [
-                p.username,
-                p.score,
-              ])
-            ),
-          }
-        : null;
+      if (room.state.isPlaying) {
+        const hiddenWord = room.state.word
+          ? Array.from(room.state.word)
+              .map((letter, i) => {
+                if (room.state.revealedIndices.has(i)) return letter;
+                if (letter === " ") return " ";
+                return "_";
+              })
+              .join(" ") // Add space between characters
+          : "";
 
-      socket.emit("room-joined", {
-        roomId: room.id,
-        players: getRoomPlayers(room),
-        host: room.host,
-        settings: room.settings,
-        gameState: gameState,
-      });
+        const gameState = {
+          isPlaying: true,
+          drawer: room.players.get(room.state.currentDrawer)?.username,
+          drawerId: room.state.currentDrawer,
+          isChoosing: room.state.isChoosing,
+          timeLeft: room.state.timeLeft,
+          drawingData: room.state.drawingData,
+          hiddenWord: hiddenWord,
+          timerType: room.state.timerType,
+          round: room.state.round,
+          turn: room.state.turn,
+          scores: Object.fromEntries(
+            Array.from(room.players.entries()).map(([id, p]) => [
+              p.username,
+              p.score,
+            ])
+          ),
+          hintsRevealed: room.state.revealedIndices.size,
+          totalHints: room.state.hintCount
+        };
 
-      // Notify other players about new join
+        socket.emit("room-joined", {
+          roomId: room.id,
+          players: getRoomPlayers(room),
+          host: room.host,
+          settings: room.settings,
+          gameState: gameState
+        });
+
+        // Send current drawing data immediately after join
+        if (room.state.drawingData && room.state.drawingData.length > 0) {
+          socket.emit("drawing-data", room.state.drawingData);
+        }
+      }
+
+      // Notify others (without System: prefix)
       io.to(roomId).emit("chat-message", {
-        username: "System",
         message: `${username} joined the game`,
-        isSystem: true,
+        isSystem: true
       });
     }
 
@@ -703,13 +729,27 @@ io.on("connection", (socket) => {
     const roomId = userToRoom.get(socket.id);
     const room = rooms.get(roomId);
 
-    if (!room) return;
+    if (!room || !room.state) return;
 
     const player = room.players.get(socket.id);
+    if (!player) return;
+
+    // Validate drawer exists
+    const drawer = room.players.get(room.state.currentDrawer);
+    if (!drawer && room.state.isPlaying) {
+      // Drawer missing - end turn and reassign
+      console.log('[ERROR] Drawer not found, ending turn');
+      if (room.state.timerInterval) {
+        clearInterval(room.state.timerInterval);
+      }
+      endTurn(roomId);
+      return;
+    }
+
     const isDrawer = socket.id === room.state.currentDrawer;
 
     // Always allow chat messages from drawer or during choosing phase
-    if (isDrawer || room.state.isChoosing) {
+    if (isDrawer || room.state.isChoosing || !room.state.word) {
       io.to(roomId).emit("chat-message", {
         username: player.username,
         message,
@@ -721,63 +761,50 @@ io.on("connection", (socket) => {
     // Handle guessing during draw phase
     const normalizedGuess = message.toLowerCase().trim();
     const normalizedWord = room.state.word.toLowerCase().trim();
-    const isCorrectGuess =
-      normalizedGuess === normalizedWord &&
-      !room.state.correctGuesses.has(socket.id);
+    const isCorrectGuess = normalizedGuess === normalizedWord && 
+                          !room.state.correctGuesses.has(socket.id);
 
     if (isCorrectGuess) {
-      // Calculate and award points
+      // Award points to guesser
       const points = calculatePoints(room.state.timeLeft, room.settings.drawTime, roomId);
       player.lastAwardedPoints = points;
       player.score += points;
       room.state.correctGuesses.add(socket.id);
 
-      // Reveal the full word to the player who guessed correctly
-      io.to(socket.id).emit("game-state-update", {
-        hiddenWord: room.state.word,  // Show complete word
-        isDrawer: false,
-        drawer: room.players.get(room.state.currentDrawer)?.username,
-        drawerId: room.state.currentDrawer,
-        timeLeft: room.state.timeLeft,
-        timerType: "draw"
-      });
-
-      // Emit the correct guess message to chat without "System:"
+      // Notify about correct guess
       io.to(roomId).emit("chat-message", {
         message: `${player.username} guessed correctly!`,
         type: "correct-guess"
       });
 
-      // Emit points awarded
-      io.to(roomId).emit("word-end", {
-        awardedPoints: {
-          [player.username]: points
-        },
-        word: room.state.word
-      });
-
       // Check if everyone guessed
       const nonDrawerCount = room.players.size - 1;
       if (room.state.correctGuesses.size >= nonDrawerCount) {
-        const drawerPoints = calculateDrawerPoints(
-          room.state.correctGuesses.size,
-          room.players.size,
-          roomId
-        );
-        
-        const drawer = room.players.get(room.state.currentDrawer);
-        drawer.lastAwardedPoints = drawerPoints;
-        drawer.score += drawerPoints;
+        // Double check drawer still exists
+        const currentDrawer = room.players.get(room.state.currentDrawer);
+        if (currentDrawer) {
+          const drawerPoints = calculateDrawerPoints(
+            room.state.correctGuesses.size,
+            room.players.size,
+            roomId
+          );
+          
+          currentDrawer.lastAwardedPoints = drawerPoints;
+          currentDrawer.score += drawerPoints;
 
-        // Emit drawer points
-        io.to(roomId).emit("word-end", {
-          awardedPoints: {
-            [drawer.username]: drawerPoints
-          },
-          word: room.state.word
-        });
+          // Emit drawer points
+          io.to(roomId).emit("word-end", {
+            awardedPoints: {
+              [currentDrawer.username]: drawerPoints
+            },
+            word: room.state.word
+          });
+        }
 
-        clearInterval(room.state.timerInterval);
+        // End turn regardless of drawer presence
+        if (room.state.timerInterval) {
+          clearInterval(room.state.timerInterval);
+        }
         endTurn(roomId);
       }
     } else {
@@ -815,12 +842,20 @@ io.on("connection", (socket) => {
     if (!roomId) return;
     const room = rooms.get(roomId);
     if (!room) return;
+
+    const player = room.players.get(socket.id);
+    if (!player) return;
+
+    // Remove player from room
     room.players.delete(socket.id);
     userToRoom.delete(socket.id);
+
+    // If room becomes empty, clean up
     if (room.players.size === 0) {
       console.log(`[INFO] Room empty, cleaning up: ${roomId}`);
       cleanupRoom(roomId);
     } else {
+      // If host disconnects, assign new host
       if (room.host === socket.id) {
         room.host = Array.from(room.players.keys())[0];
         room.players.get(room.host).isHost = true;
@@ -828,11 +863,18 @@ io.on("connection", (socket) => {
           `[INFO] Host left, new host: ${room.players.get(room.host).username}`
         );
       }
+      // Notify room update
       io.to(roomId).emit("room-update", {
         roomId,
         players: getRoomPlayers(room),
         host: room.host,
         settings: room.settings, // Always include settings
+      });
+
+      // Notify about player leaving (without System: prefix)
+      io.to(roomId).emit("chat-message", {
+        message: `${player.username} left the game`,
+        isSystem: true
       });
     }
   });
